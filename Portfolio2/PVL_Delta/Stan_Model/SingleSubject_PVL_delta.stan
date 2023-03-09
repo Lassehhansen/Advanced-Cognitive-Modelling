@@ -8,8 +8,6 @@ data {
 }
 
 
-// The parameters accepted by the model. Our model
-// accepts two parameters 'mu' and 'sigma'.
 parameters {
   real a;
   real A;
@@ -18,9 +16,6 @@ parameters {
 
 }
 
-// The model to be estimated. We model the output
-// 'y' to be normally distributed with mean 'mu'
-// and standard deviation 'sigma'.
 model {
   array[N, 2] real u;
   array[N, 2] real E;
