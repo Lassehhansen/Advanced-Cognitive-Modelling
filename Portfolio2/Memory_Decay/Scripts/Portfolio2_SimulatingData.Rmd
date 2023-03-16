@@ -1,0 +1,185 @@
+---
+title: "Untitled"
+author: "Lasse Hyldig Hansen"
+date: "2023-02-27"
+output: html_document
+---
+
+# Packages
+
+```{r}
+pacman::p_load(
+  tidyverse, here, 
+  posterior, cmdstanr, brms
+)
+```
+
+# Get data 
+
+## Loading matching pennies game function that allows for multiple memory sizes 
+
+```{r}
+source("../Agent_Functions/Matching_Pennies_Game_Function_PVL.R")
+```
+
+```{r}
+n_agents<- 10
+n_trials <- 2000
+function_give <- "WSLSAgent_Function"
+bias = 0.4
+noise = 0.1
+shape = 0.1
+LOSSW = 1
+LR = 0.4
+IH = 0.5
+E_right = 0
+E_left = 0
+
+# simulate the matching pennies game for multiple memory sizes
+
+payoff_df_list <- Matching_Pennies_Game_PVL(n_agents, n_trials, function_give, bias, noise, shape, LOSSW, LR, IH, E_right, E_left)
+```
+
+
+## Calling the stan regression
+
+```{r}
+file = file.path("Stan_memory_test.stan")
+mod = cmdstan_model(file, cpp_options = list(stan_threads = TRUE))
+```
+
+## Putting data in a list
+
+```{r}
+data = list(
+  n = 2000,
+  input = payoff_df_list$agent_take_choices,
+  msize = 10,
+  power = 1
+)
+
+
+```
+
+
+```{r}
+sampling <- 
+    mod$sample(
+      data = data,
+      seed = 123,
+      chains = 2,
+      parallel_chains = 2,
+      threads_per_chain = 2,
+      iter_warmup = 1000,
+      iter_sampling = 2000,
+      refresh = 500,
+      max_treedepth = 20,
+      adapt_delta = 0.99
+    )
+
+sampling$summary()
+```
+```{r}
+draws_df <- as_draws_df(sampling$draws())
+```
+
+### Setting up parameter recovery
+
+
+```{r}
+by_cyl <- split(mtcars, mtcars$cyl)
+mods <- future_map(by_cyl, ~ lm(mpg ~ wt, data = .))
+
+```
+
+
+# Playing games with different agents
+
+## Short term memory vs Random Agent & WSLS
+
+```{r}
+
+### NOTICE WHEN POWER == 0, ONLY SHORT TERM MEMORY AGENT IS ACTIVATED (CHECK THE FUNCTION)
+
+rate <- 0.5
+noise <- 0.1
+msize <- 5
+bias <- 0.5
+power = 0
+n_trials = 120
+n_agents = 100
+
+ST_VS_RANDOM_DF = Matching_Pennies_Game(n_agents, 
+                                        n_trials, 
+                                        function_give = "RandomAgentNoise_Function", 
+                                        noise, 
+                                        msize, 
+                                        bias, 
+                                        power)
+
+ST_VS_WSLS = Matching_Pennies_Game(n_agents, 
+                                   n_trials, 
+                                   function_give = "WSLSAgent_Function", 
+                                   noise, 
+                                   msize, 
+                                   bias, 
+                                   power)
+
+```
+
+## Power law memory vs Random Agent & WSLS
+
+```{r}
+
+### NOTICE WHEN POWER == 1, POWER LAW IS ACTIVATED (CHECK THE FUNCTION)
+
+rate <- 0.5
+noise <- 0.1
+msize <- 5
+power = 1
+bias <- 0.5
+n_trials = 120
+n_agents = 100
+
+PL_VS_RANDOM_DF = Matching_Pennies_Game(n_agents, 
+                                        n_trials, 
+                                        function_give = "RandomAgentNoise_Function", 
+                                        noise, 
+                                        msize, 
+                                        bias, 
+                                        power)
+
+PL_VS_WSLS = Matching_Pennies_Game(n_agents, 
+                                   n_trials, 
+                                   function_give = "WSLSAgent_Function", 
+                                   noise, 
+                                   msize, 
+                                   bias, 
+                                   power)
+```
+
+
+# Preprocessing the data 
+
+```{r cars}
+df = df %>% 
+     mutate(
+       lag1_other = lag(opponent_choice, 1),
+       lag2_other = lag(opponent_choice, 2),
+       lag3_other = lag(opponent_choice, 3),
+       lag4_other = lag(opponent_choice, 4),
+       lag5_other = lag(opponent_choice, 5),
+       
+       mean(lag1_other, lag2_other)
+       
+       
+     )
+```
+
+
+```{r}
+by_cyl <- mtcars |> split(mtcars$cyl)
+mods <- by_cyl |> map(\(df) lm(mpg ~ wt, data = df))
+map2(mods, by_cyl, predict)
+```
+

@@ -1,0 +1,84 @@
+---
+title: "Calling_Functions_Markdown"
+author: "Lasse Hyldig Hansen"
+date: "2023-02-21"
+output: html_document
+---
+
+## Loading Packages
+
+
+```{r}
+library(tidyverse)
+```
+
+## Loading matching pennies game function
+
+```{r}
+source("Matching_Pennies_Game_Function.R")
+```
+
+# Playing games with different agents
+
+## Short term memory vs Random Agent & WSLS
+
+```{r}
+
+### NOTICE WHEN POWER == 0, ONLY SHORT TERM MEMORY AGENT IS ACTIVATED (CHECK THE FUNCTION)
+
+rate <- 0.5
+noise <- 0.1
+msize <- 5
+bias <- 0.5
+power = 0
+n_trials = 120
+n_agents = 100
+
+ST_VS_RANDOM_DF = Matching_Pennies_Game(n_agents, 
+                                        n_trials, 
+                                        function_give = "RandomAgentNoise_Function", 
+                                        noise, 
+                                        msize, 
+                                        bias, 
+                                        power)
+
+ST_VS_WSLS = Matching_Pennies_Game(n_agents, 
+                                   n_trials, 
+                                   function_give = "WSLSAgent_Function", 
+                                   noise, 
+                                   msize, 
+                                   bias, 
+                                   power)
+
+```
+
+## Power law memory vs Random Agent & WSLS
+
+```{r}
+
+### NOTICE WHEN POWER == 1, POWER LAW IS ACTIVATED (CHECK THE FUNCTION)
+
+rate <- 0.5
+noise <- 0.1
+msize <- 5
+power = 1
+bias <- 0.5
+n_trials = 120
+n_agents = 100
+
+PL_VS_RANDOM_DF = Matching_Pennies_Game(n_agents, 
+                                        n_trials, 
+                                        function_give = "RandomAgentNoise_Function", 
+                                        noise, 
+                                        msize, 
+                                        bias, 
+                                        power)
+
+PL_VS_WSLS = Matching_Pennies_Game(n_agents, 
+                                   n_trials, 
+                                   function_give = "WSLSAgent_Function", 
+                                   noise, 
+                                   msize, 
+                                   bias, 
+                                   power)
+```
