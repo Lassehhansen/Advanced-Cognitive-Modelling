@@ -1,0 +1,457 @@
+---
+title: "Simulating Data, Running Models, Parameter Recovery"
+author: "Lasse Hyldig Hansen"
+date: "2023-02-27"
+output: html_document
+---
+
+# Packages
+
+```{r}
+pacman::p_load(
+  tidyverse, here, 
+  posterior, cmdstanr, brms
+)
+```
+
+# Get data 
+
+## Loading matching pennies game function that allows for multiple memory sizes 
+
+```{r}
+source("../Agent_Functions/Matching_Pennies_Game_Function.R")
+```
+
+```{r}
+n_agents = 1
+n_trials = 1000
+function_give = "RandomAgentNoise_Function"
+function_take = "MemDecay_Function"
+bias = 0.3
+power = 1
+msize = 5
+alpha = 0.4
+beta = 0.6
+noise = 0
+# simulate the matching pennies game for multiple memory sizes
+
+payoff_df_list2 <- Matching_Pennies_Game(n_agents = n_agents, 
+                                 n_trials = n_trials, 
+                                 function_give = function_give, 
+                                 function_take = function_take, 
+                                 noise = noise, 
+                                 msize = msize, 
+                                 bias = bias,
+                                 power = power, 
+                                 alpha = alpha,
+                                 beta = beta)
+```
+
+## Calling the stan model
+
+```{r}
+file = file.path("../recovery/MemDecay_Model.stan")
+mod = cmdstan_model(file, cpp_options = list(stan_threads = TRUE))
+```
+
+## Putting data in a list
+
+```{r}
+payoff_df_list2$agent_give_choices = ifelse(payoff_df_list2$agent_give_choices == 0, -1, 1)
+data = list(
+  N = 1000,
+  give_choices = payoff_df_list2$agent_give_choices,
+  take_choices = payoff_df_list2$agent_take_choices,
+  power = 1
+)
+
+```
+
+
+```{r}
+sampling <- 
+    mod$sample(
+      data = data,
+      seed = 123,
+      chains = 2,
+      parallel_chains = 2,
+      threads_per_chain = 2,
+      iter_warmup = 1000,
+      iter_sampling = 2000,
+      refresh = 500,
+      max_treedepth = 20,
+      adapt_delta = 0.99
+    )
+
+sampling$summary()
+```
+
+```{r}
+draws_df <- as_draws_df(sampling$draws())
+```
+
+### Visualizing Models 
+
+```{r}
+ggplot(draws_df, aes(.iteration, alpha, group = .chain, color = .chain)) +
+  geom_line() +
+  theme_classic()
+```
+
+```{r}
+ggplot(draws_df, aes(.iteration, beta, group = .chain, color = .chain)) +
+  geom_line() +
+  theme_classic()
+```
+
+
+
+```{r}
+# Now let's plot the density for alpha (prior and posterior)
+ggplot(draws_df) +
+  geom_density(aes(alpha), fill = "blue", alpha = 0.3) +
+  geom_density(aes(alpha_prior), fill = "red", alpha = 0.3) +
+  geom_vline(xintercept = 0.4, linewidth = 2) +
+  xlab("Alpha") +
+  ylab("Posterior Density") +
+  ggtitle("Mem Decay Agent vs Random Agent") +
+  theme_classic()
+```
+
+```{r}
+# Now let's plot the density for beta (prior and posterior)
+ggplot(draws_df) +
+  geom_density(aes(beta), fill = "blue", alpha = 0.3) +
+  geom_density(aes(beta_prior), fill = "red", alpha = 0.3) +
+  geom_vline(xintercept = 0.6, size = 2) +
+  xlab("Beta") +
+  ylab("Posterior Density") +
+  ggtitle("Beta - Mem Decay vs Random Agent") +
+  theme_classic()
+```
+
+
+```{r}
+ggplot(draws_df) +
+  
+  geom_histogram(aes(`prior_preds1`), color = "purple", fill = "#DDA0DD", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds3`), color = "orange", fill = "#FED8B1", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds5`), color = "yellow", fill = "lightyellow", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds7`), color = "green", fill = "lightgreen", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds9`), color = "blue", fill = "lightblue", alpha = 0.2) +
+  xlab("Predicted heads out of 2000 trials") +
+  ylab("Prior Density") +
+  ggtitle("Beta - Mem Decay Agent vs Random Agent") +
+  theme_classic()
+```
+
+```{r}
+ggplot(draws_df) +
+  geom_histogram(aes(`post_preds1`), color = "purple", fill = "#DDA0DD", alpha = 0.2) +
+  geom_histogram(aes(`post_preds3`), color = "orange", fill = "#FED8B1", alpha = 0.2) +
+  geom_histogram(aes(`post_preds5`), color = "yellow", fill = "lightyellow", alpha = 0.2) +
+  geom_histogram(aes(`post_preds7`), color = "green", fill = "lightgreen", alpha = 0.2) +
+  geom_histogram(aes(`post_preds9`), color = "blue", fill = "lightblue", alpha = 0.2) +
+  xlab("Predicted heads out of 2000 trials") +
+  ylab("Posterior Density") +
+  ggtitle("Beta - Mem Decay Agent vs Random Agent") +
+  theme_classic()
+```
+
+### Parameter Recovery 
+
+```{r}
+n_agents = 1
+n_trials = 1000
+function_give = "RandomAgentNoise_Function"
+function_take = "MemDecay_Function"
+power = 1
+alpha = 0.4
+beta = 0.6
+noise = 0
+
+# simulate the matching pennies game for multiple memory sizes
+
+
+recovery_df <- NULL
+
+for (bias_true in seq(0.1, 0.9, 0.1)) { # looping through noise levels
+  
+  #for (trials in seq(50, 1000, 50)) { # looping through rate levels
+    
+  for (beta_true in seq(-1, 1, 0.1)) { # looping through rate levels
+    
+    
+    temp <- Matching_Pennies_Game(n_agents = n_agents, 
+                                 n_trials = n_trials, 
+                                 function_give = function_give, 
+                                 function_take = function_take, 
+                                 noise = noise, 
+                                 msize = msize, 
+                                 bias = bias_true, 
+                                 power = power, 
+                                 alpha = alpha,
+                                 beta = beta_true)
+    
+    temp$agent_give_choices = ifelse(temp$agent_give_choices == 0, -1, 1)
+    
+    data = list(
+            N = n_trials,
+            give_choices = temp$agent_give_choices,
+            take_choices = temp$agent_take_choices,
+            power = power
+            )
+    
+    sampling <- 
+            mod$sample(
+                      data = data,
+                      seed = 123,
+                      chains = 2,
+                      parallel_chains = 2,
+                      threads_per_chain = 2,
+                      iter_warmup = 1000,
+                      iter_sampling = 2000,
+                      refresh = 500,
+                      max_treedepth = 20,
+                      adapt_delta = 0.99
+                    )
+    
+    draws_df <- as_draws_df(sampling$draws()) 
+    
+    temp <- tibble(betaEst = draws_df$beta, 
+                   betaTrue = beta_true,
+                   biasTrue = bias_true)
+    
+    
+    if (exists("recovery_df")) {
+      recovery_df <- rbind(recovery_df, temp)
+      } 
+    else {
+      recovery_df <- temp
+        }
+      }
+      }
+
+#write_csv(recovery_df, "simdata/W3_recoverydf_simple.csv")
+
+```
+
+```{r}
+n_agents = 1
+n_trials = 200
+function_give = "RandomAgentNoise_Function"
+function_take = "MemDecay_Function"
+noise = 0.1
+msize = 5
+bias = 0.7
+
+power = 1
+alpha = 0.4
+beta = 0.6
+noise = 0
+# simulate the matching pennies game for multiple memory sizes
+
+
+recovery_df1 <- NULL
+
+for (trials in seq(50, 1000, 100)) { # looping through noise levels
+  
+  #for (trials in seq(50, 1000, 50)) { # looping through rate levels
+    
+  for (beta_true in seq(-1, 1, 0.1)) { # looping through rate levels
+    
+    
+    temp <- Matching_Pennies_Game(n_agents, 
+                                 trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 msize, 
+                                 bias, 
+                                 power, 
+                                 alpha,
+                                 beta_true)
+    
+    temp$agent_give_choices = ifelse(temp$agent_give_choices == 0, -1, 1)
+    
+    data = list(
+            N = trials,
+            give_choices = temp$agent_give_choices,
+            take_choices = temp$agent_take_choices,
+            power = power
+            )
+    
+    sampling <- 
+            mod$sample(
+                      data = data,
+                      seed = 123,
+                      chains = 2,
+                      parallel_chains = 2,
+                      threads_per_chain = 2,
+                      iter_warmup = 1000,
+                      iter_sampling = 2000,
+                      refresh = 500,
+                      max_treedepth = 20,
+                      adapt_delta = 0.99
+                    )
+    
+    draws_df <- as_draws_df(sampling$draws()) 
+    
+    temp1 <- tibble(betaEst = draws_df$beta, 
+                   betaTrue = beta_true,
+                   n_trials = trials)
+    
+    
+    if (exists("recovery_df1")) {
+      recovery_df1 <- rbind(recovery_df1, temp1)
+      } 
+    else {
+      recovery_df1 <- temp1
+        }
+      }
+      }
+
+#write_csv(recovery_df, "simdata/W3_recoverydf_simple.csv")
+
+```
+
+
+```{r}
+PR1 = ggplot(recovery_df, aes(betaTrue, betaEst)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth() +
+  facet_wrap(.~biasTrue) +
+  theme_classic()
+```
+
+```{r}
+PR2 = ggplot(recovery_df1, aes(betaTrue, betaEst)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth() +
+  facet_wrap(.~n_trials) +
+  theme_classic()
+```
+
+### Prior Sensitivity Check
+
+## Calling the stan model
+
+```{r}
+file_sensitivity = file.path("../recovery/MemDecay_PriorSensitivity.stan")
+mod_sensitivity = cmdstan_model(file_sensitivity, cpp_options = list(stan_threads = TRUE))
+```
+### Setting up prior dataframe
+
+```{r}
+prior_mean_alpha <- 0
+prior_sd_alpha <- seq(0.1, 0.5, 0.1)
+
+prior_mean_beta <- 0
+prior_sd_beta <- seq(0.1, 0.5, 0.1)
+
+priors <-  tibble(expand.grid(tibble(prior_mean_alpha, 
+                                     prior_sd_alpha, 
+                                     prior_mean_beta, 
+                                     prior_sd_beta
+                                     )))
+```
+
+
+```{r}
+sim_d_and_fit <- function(prior_mean_alpha, 
+                               prior_sd_alpha, 
+                               prior_mean_beta,
+                               prior_sd_beta) {
+  
+    data <- list(
+        N = nrow(payoff_df_list2),
+        give_choices = payoff_df_list2$agent_give_choices,
+        take_choices = payoff_df_list2$agent_take_choices,
+        power = 1,
+        
+        prior_mean_alpha = prior_mean_alpha,
+        prior_sd_alpha = prior_sd_alpha,
+        
+        prior_mean_beta = prior_mean_beta,
+        prior_sd_beta = prior_sd_beta
+        
+      )
+    
+    samples <- mod_sensitivity$sample(
+      data = data,
+      seed = 1000,
+      chains = 1,
+      parallel_chains = 1,
+      threads_per_chain = 1,
+      iter_warmup = 1000,
+      iter_sampling = 2000,
+      refresh = 0,
+      max_treedepth = 20,
+      adapt_delta = 0.99,
+    )
+    
+    draws_df <- as_draws_df(samples$draws()) 
+      temp <- tibble(alpha_prior = draws_df$alpha_prior, 
+                     beta_prior = draws_df$beta_prior, 
+                     
+                     alpha_posterior = draws_df$alpha, 
+                     beta_posterior = draws_df$beta, 
+
+                     prior_preds1 = draws_df$prior_preds1, 
+                     prior_preds3 = draws_df$prior_preds3, 
+                     prior_preds5 = draws_df$prior_preds5, 
+                     prior_preds7 = draws_df$prior_preds7, 
+                     prior_preds9 = draws_df$prior_preds9, 
+                     
+                     post_preds1 = draws_df$post_preds1, 
+                     post_preds3 = draws_df$post_preds3, 
+                     post_preds5 = draws_df$post_preds5, 
+                     post_preds7 = draws_df$post_preds7, 
+                     post_preds9 = draws_df$post_preds9, 
+                    
+                     
+                     prior_mean_alpha = prior_mean_alpha,
+                     prior_sd_alpha = prior_sd_alpha, 
+                     
+                     prior_mean_beta = prior_mean_beta,
+                     prior_sd_beta = prior_sd_beta
+                     
+                     )
+    
+    return(temp)
+  
+}
+```
+
+
+```{r}
+pacman::p_load(future, purrr, furrr)
+plan(multisession, workers = 4)
+
+recovery_df <- future_pmap_dfr(priors, sim_d_and_fit, .options = furrr_options(seed = TRUE))
+write_csv(recovery_df_win, "../Data/MemoryPriorSensitivity.csv")
+```
+
+### Prior sensitivity plot alpha 
+
+```{r}
+ggplot(recovery_df, aes(prior_sd_alpha, alpha_posterior)) +
+  geom_point(alpha = 0.1) +
+  geom_hline(yintercept = 0.4, color = "red") +
+  geom_smooth(method = lm) +
+  facet_wrap(.~prior_sd_beta) +
+  ggtitle("Alpha - Mem Decay Agent vs Random Agent") +
+  theme_classic()
+```
+
+```{r}
+ggplot(recovery_df, aes(prior_sd_beta, beta_posterior)) +
+  geom_point(alpha = 0.1) +
+  geom_hline(yintercept = 0.6, color = "red") +
+  geom_smooth(method = lm) +
+  facet_wrap(.~prior_sd_alpha) +
+  ggtitle("Beta - Mem Decay Agent vs Random Agent") +
+  theme_classic()
+```
+
+
