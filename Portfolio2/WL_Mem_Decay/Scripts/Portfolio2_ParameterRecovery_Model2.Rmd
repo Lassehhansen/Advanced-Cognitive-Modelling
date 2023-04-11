@@ -1,0 +1,403 @@
+---
+title: "Simulating Data, Running Models, Parameter Recovery"
+author: "Lasse Hyldig Hansen"
+date: "2023-02-27"
+output: html_document
+---
+
+# Packages
+
+```{r}
+pacman::p_load(
+  tidyverse, here, 
+  posterior, cmdstanr, brms
+)
+getwd() # Sanity check
+
+
+```
+## Loading matching pennies game function
+```{r}
+source("../Agent_Functions/Matching_Pennies_Game_Function.R")
+
+```
+
+
+## Calling the stan model
+
+```{r}
+file = file.path("../stan/WL_Mem_Decay_Model.stan")
+mod = cmdstan_model(file, cpp_options = list(stan_threads = TRUE))
+```
+
+### Parameter Recovery by bias
+
+```{r}
+# simulate the matching pennies game for multiple memory sizes
+
+
+# Default function setup values
+n_agents = 1
+n_trials = 200
+function_give = "RandomAgentNoise_Function"
+function_take = "LA_Agent_Function"
+bias = 0.7
+noise = 0.1
+power = 0.5
+
+# Default parameter values
+alpha = 0
+beta_win = 1
+beta_loss = 0.5
+
+# simulate the matching pennies game for multiple memory sizes
+
+
+# Sanity check that matching pennies game function is giving the correct output.
+test <- Matching_Pennies_Game(n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias, 
+                                 power, 
+                                 alpha,
+                                 beta_win, 
+                                 beta_loss)
+
+
+sim_data_and_fit <- function(mod, n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias, 
+                                 power, 
+                                 alpha,
+                                 beta_win, 
+                                 beta_loss){
+
+  temp <- Matching_Pennies_Game(n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias, 
+                                 power, 
+                                 alpha,
+                                 beta_win, 
+                                 beta_loss)
+    
+    temp$agent_give_choices = ifelse(temp$agent_give_choices == 0, -1, 1)
+    
+    data = list(
+            N = n_trials,
+            give_choices = temp$agent_give_choices,
+            take_choices = temp$agent_take_choices,
+            power = power
+            )
+    
+    sampling <- 
+            mod$sample(
+                      data = data,
+                      seed = 123,
+                      chains = 2,
+                      parallel_chains = 2,
+                      threads_per_chain = 2,
+                      iter_warmup = 1000,
+                      iter_sampling = 2000,
+                      refresh = 0,
+                      max_treedepth = 20,
+                      adapt_delta = 0.99
+                    )
+
+    
+    return(sampling)
+}
+    
+
+
+sim_data_and_fit(mod, n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias, 
+                                 power, 
+                                 alpha,
+                                 beta_win, 
+                                 beta_loss)
+
+
+```
+
+```{r}
+
+recovery_df1 <- NULL
+
+for (bias_true in seq(0.1, 0.9, 0.2)) { # 
+    
+  for (beta_win_true in seq(0.2, 1, 0.2)) { # 
+    
+sampling <- sim_data_and_fit(mod, n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias_true, 
+                                 power, 
+                                 alpha,
+                                 beta_win_true, 
+                                 beta_loss)
+    
+    draws_df <- as_draws_df(sampling$draws()) 
+    
+    temp <- tibble(betaWinEst = draws_df$beta_win, 
+                   betaWinTrue = beta_win_true,
+                   biasTrue = bias_true)
+    
+    
+    if (exists("recovery_df1")) {
+      recovery_df1 <- rbind(recovery_df1, temp)
+      } 
+    else {
+      recovery_df1 <- temp
+        }
+      }
+      }
+
+write_csv(recovery_df1, "W3_recovery_df1.csv")
+
+
+ggplot(recovery_df1, aes(betaWinTrue, betaWinEst)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(.~biasTrue) +
+  theme_classic()
+
+```
+
+```{r}
+
+recovery_df2 <- NULL
+for (bias_true in seq(0.1, 0.9, 0.2)) { # 
+    
+  for (beta_loss_true in seq(0.2, 1, 0.2)) { # 
+    
+sampling <- sim_data_and_fit(mod, n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias_true, 
+                                 power, 
+                                 alpha,
+                                 beta_win, 
+                                 beta_loss_true)
+    
+    draws_df <- as_draws_df(sampling$draws()) 
+    
+    temp <- tibble(betaEst = draws_df$beta_loss, 
+                   betaTrue = beta_loss_true,
+                   biasTrue = bias_true)
+    
+    
+    if (exists("recovery_df2")) {
+      recovery_df2 <- rbind(recovery_df2, temp)
+      } 
+    else {
+      recovery_df2 <- temp
+        }
+      }
+      }
+
+write_csv(recovery_df2, "W3_recovery_df2.csv")
+
+
+ggplot(recovery_df2, aes(betaTrue, betaEst)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(.~biasTrue) +
+  theme_classic()
+```
+
+```{r}
+recovery_df3 <- NULL
+for (bias_true in seq(0.1, 0.9, 0.2)) { # 
+    
+  for (alpha_true in seq(-1, 1, 0.4)) { # 
+    
+sampling <- sim_data_and_fit(mod, n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias_true, 
+                                 power, 
+                                 alpha_true,
+                                 beta_win, 
+                                 beta_loss)
+    
+    draws_df <- as_draws_df(sampling$draws()) 
+    
+    temp <- tibble(alphaEst = draws_df$alpha, 
+                   alphaTrue = alpha_true,
+                   biasTrue = bias_true)
+    
+    
+    if (exists("recovery_df3")) {
+      recovery_df3 <- rbind(recovery_df3, temp)
+      } 
+    else {
+      recovery_df3 <- temp
+        }
+      }
+      }
+
+write_csv(recovery_df3, "W3_recovery_df3.csv")
+
+
+ggplot(recovery_df3, aes(alphaTrue, alphaEst)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(.~biasTrue) +
+  theme_classic()
+```
+
+
+
+### Parameter Recovery by n_trials
+
+```{r}
+
+recovery_df4 <- NULL
+
+for (n_trials in seq(100, 900, 200)) { # looping through 
+    
+  for (beta_win_true in seq(0.2, 1, 0.2)) { # 
+    
+sampling <- sim_data_and_fit(mod, n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias, 
+                                 power, 
+                                 alpha,
+                                 beta_win_true, 
+                                 beta_loss)
+    
+    draws_df <- as_draws_df(sampling$draws()) 
+    
+    temp <- tibble(betaWinEst = draws_df$beta_win, 
+                   betaWinTrue = beta_win_true,
+                   n_trials = n_trials)
+    
+    
+    if (exists("recovery_df4")) {
+      recovery_df4 <- rbind(recovery_df4, temp)
+      } 
+    else {
+      recovery_df4 <- temp
+        }
+      }
+      }
+
+write_csv(recovery_df4, "W3_recovery_df4.csv")
+
+
+ggplot(recovery_df4, aes(betaWinTrue, betaWinEst)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(.~n_trials) +
+  theme_classic()
+
+```
+
+```{r}
+
+recovery_df5 <- NULL
+for (n_trials in seq(100, 900, 200)) { # looping through 
+  
+  
+  for (beta_loss_true in seq(0.2, 1, 0.2)) { # 
+    
+sampling <- sim_data_and_fit(mod, n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias_true, 
+                                 power, 
+                                 alpha,
+                                 beta_win, 
+                                 beta_loss_true)
+    
+    draws_df <- as_draws_df(sampling$draws()) 
+    
+    temp <- tibble(betaLossEst = draws_df$beta_loss, 
+                   betaLossTrue = beta_loss_true,
+                   n_trials = n_trials)
+    
+    
+    if (exists("recovery_df5")) {
+      recovery_df5 <- rbind(recovery_df5, temp)
+      } 
+    else {
+      recovery_df5 <- temp
+        }
+      }
+      }
+
+write_csv(recovery_df5, "W3_recovery_df5.csv")
+
+
+ggplot(recovery_df5, aes(betaLossTrue, betaLossEst)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(.~n_trials) +
+  theme_classic()
+```
+
+```{r}
+recovery_df6 <- NULL
+for (n_trials in seq(100, 900, 200)) { # looping through 
+    
+  for (alpha_true in seq(-1, 1, 0.4)) { # 
+    
+sampling <- sim_data_and_fit(mod, n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias_true, 
+                                 power, 
+                                 alpha_true,
+                                 beta_win, 
+                                 beta_loss)
+    
+    draws_df <- as_draws_df(sampling$draws()) 
+    
+    temp <- tibble(alphaEst = draws_df$alpha, 
+                   alphaTrue = alpha_true,
+                   n_trials = n_trials)
+    
+    
+    if (exists("recovery_df6")) {
+      recovery_df6 <- rbind(recovery_df6, temp)
+      } 
+    else {
+      recovery_df6 <- temp
+        }
+      }
+      }
+
+write_csv(recovery_df6, "W3_recovery_df6.csv")
+read_csv
+
+ggplot(recovery_df6, aes(alphaTrue, alphaEst)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(.~n_trials) +
+  theme_classic()
+```

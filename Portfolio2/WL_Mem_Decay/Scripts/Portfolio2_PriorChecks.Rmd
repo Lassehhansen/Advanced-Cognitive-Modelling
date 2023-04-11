@@ -1,0 +1,447 @@
+---
+title: "Model Estimation vs Random Agent"
+author: "Lasse Hyldig Hansen"
+date: "2023-02-27"
+output: html_document
+---
+
+# Packages
+
+```{r}
+pacman::p_load(
+  tidyverse, here, 
+  posterior, cmdstanr, brms
+)
+```
+
+# Get data 
+
+## Loading matching pennies game function that allows for multiple memory sizes 
+
+```{r}
+getwd()
+source("../Agent_Functions/Matching_Pennies_Game_Function.R")
+```
+
+```{r}
+n_agents = 1
+n_trials = 200
+function_give = "RandomAgentNoise_Function"
+function_take = "LA_Agent_Function"
+noise = 0.1
+msize = 5
+bias = 0.5
+power = 1
+alpha = 0.3
+beta_win = 0.3
+beta_loss = 0.6
+
+# simulate the matching pennies game for multiple memory sizes
+
+payoff_df_list2 <- Matching_Pennies_Game(n_agents, 
+                                 n_trials, 
+                                 function_give, 
+                                 function_take, 
+                                 noise, 
+                                 bias, 
+                                 power, 
+                                 alpha,
+                                 beta_win, 
+                                 beta_loss)
+```
+
+## Calling the stan model
+
+```{r}
+file = file.path("../Stan/WL_Mem_Decay_Model.stan")
+mod = cmdstan_model(file, cpp_options = list(stan_threads = TRUE))
+```
+
+## Putting data in a list
+
+```{r}
+payoff_df_list2$agent_give_choices = ifelse(payoff_df_list2$agent_give_choices == 0, -1, 1)
+data = list(
+  N = 200,
+  give_choices = payoff_df_list2$agent_give_choices,
+  take_choices = payoff_df_list2$agent_take_choices,
+  power = 1
+)
+
+```
+
+
+```{r}
+sampling <- 
+    mod$sample(
+      data = data,
+      seed = 123,
+      chains = 2,
+      parallel_chains = 2,
+      threads_per_chain = 2,
+      iter_warmup = 1000,
+      iter_sampling = 2000,
+      refresh = 500,
+      max_treedepth = 20,
+      adapt_delta = 0.99
+    )
+
+sampling$summary()
+```
+
+```{r}
+draws_df <- as_draws_df(sampling$draws())
+```
+
+### Setting up parameter recovery
+
+```{r}
+# Now let's plot the density for alpha (prior and posterior)
+ggplot(draws_df) +
+  geom_density(aes(alpha), fill = "blue", alpha = 0.3) +
+  geom_density(aes(alpha_prior), fill = "red", alpha = 0.3) +
+  geom_vline(xintercept = 0.3, linewidth = 2) +
+  xlab("Alpha") +
+  ylab("Posterior Density") +
+  ggtitle("W/L Mem Agent vs Random Agent") +
+  theme_classic()
+```
+
+```{r}
+# Now let's plot the density for beta (prior and posterior)
+ggplot(draws_df) +
+  geom_density(aes(beta_win), fill = "blue", alpha = 0.3) +
+  geom_density(aes(beta_win_prior), fill = "red", alpha = 0.3) +
+  geom_vline(xintercept = 0.3, size = 2) +
+  xlab("Beta") +
+  ylab("Posterior Density") +
+  ggtitle("Beta Win - W/L Mem Agent vs Random Agent") +
+  theme_classic()
+```
+
+```{r}
+# Now let's plot the density for beta (prior and posterior)
+ggplot(draws_df) +
+  geom_density(aes(beta_loss), fill = "blue", alpha = 0.3) +
+  geom_density(aes(beta_loss_prior), fill = "red", alpha = 0.3) +
+  geom_vline(xintercept = 0.6, size = 2) +
+  xlab("Beta") +
+  ylab("Posterior Density") +
+  ggtitle("Beta Loss - W/L Mem Agent vs Random Agent") +
+  theme_classic()
+```
+
+```{r}
+ggplot(draws_df) +
+  
+  geom_histogram(aes(`prior_preds_loss1`), color = "purple", fill = "#DDA0DD", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds_loss3`), color = "orange", fill = "#FED8B1", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds_loss5`), color = "yellow", fill = "lightyellow", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds_loss7`), color = "green", fill = "lightgreen", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds_loss9`), color = "blue", fill = "lightblue", alpha = 0.2) +
+  xlab("Predicted heads out of 200 trials") +
+  ylab("Prior Density") +
+  ggtitle("Beta Loss - W/L Mem Agent vs Random Agent") +
+  theme_classic()
+```
+
+```{r}
+ggplot(draws_df) +
+  geom_histogram(aes(`prior_preds_win1`), color = "purple", fill = "#DDA0DD", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds_win3`), color = "orange", fill = "#FED8B1", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds_win5`), color = "yellow", fill = "lightyellow", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds_win7`), color = "green", fill = "lightgreen", alpha = 0.2) +
+  geom_histogram(aes(`prior_preds_win9`), color = "blue", fill = "lightblue", alpha = 0.2) +
+  xlab("Predicted heads out of 200 trials") +
+  ylab("Prior Density") +
+  ggtitle("Beta Win - W/L Mem Agent vs Random Agent") +
+  theme_classic()
+```
+
+```{r}
+ggplot(draws_df) +
+  
+  geom_histogram(aes(`post_preds_loss1`), color = "purple", fill = "#DDA0DD", alpha = 0.2) +
+  geom_histogram(aes(`post_preds_loss3`), color = "orange", fill = "#FED8B1", alpha = 0.2) +
+  geom_histogram(aes(`post_preds_loss5`), color = "yellow", fill = "lightyellow", alpha = 0.2) +
+  geom_histogram(aes(`post_preds_loss7`), color = "green", fill = "lightgreen", alpha = 0.2) +
+  geom_histogram(aes(`post_preds_loss9`), color = "blue", fill = "lightblue", alpha = 0.2) +
+  xlab("Predicted heads out of 200 trials") +
+  ylab("Posterior Density") +
+  ggtitle("Beta Loss - W/L Mem Agent vs Random Agent") +
+  theme_classic()
+```
+
+```{r}
+ggplot(draws_df) +
+  geom_histogram(aes(`post_preds_win1`), color = "purple", fill = "#DDA0DD", alpha = 0.2) +
+  geom_histogram(aes(`post_preds_win3`), color = "orange", fill = "#FED8B1", alpha = 0.2) +
+  geom_histogram(aes(`post_preds_win5`), color = "yellow", fill = "lightyellow", alpha = 0.2) +
+  geom_histogram(aes(`post_preds_win7`), color = "green", fill = "lightgreen", alpha = 0.2) +
+  geom_histogram(aes(`post_preds_win9`), color = "blue", fill = "lightblue", alpha = 0.2) +
+  xlab("Predicted heads out of 2000 trials") +
+  ylab("Posterior Density") +
+  ggtitle("Beta Win - W/L Mem Agent vs Random Agent") +
+  theme_classic()
+```
+
+### Prior Sensitivity check 
+
+```{r}
+file_sensitivity_win = file.path("../Stan/Prior_Sensitivity_WL_Model_win.stan")
+mod_sensitivity_win = cmdstan_model(file_sensitivity_win, cpp_options = list(stan_threads = TRUE))
+```
+
+```{r}
+file_sensitivity_loss = file.path("../Stan/Prior_Sensitivity_WL_Model_Loss.stan")
+mod_sensitivity_loss = cmdstan_model(file_sensitivity_loss, cpp_options = list(stan_threads = TRUE))
+```
+
+### Setting up prior dataframe
+
+```{r}
+prior_mean_alpha <- 0
+prior_sd_alpha <- seq(0.1, 0.5, 0.1)
+
+prior_mean_beta_win <- 0
+prior_sd_beta_win <- seq(0.1, 0.5, 0.1)
+
+prior_mean_beta_loss <- 0
+prior_sd_beta_loss <- seq(0.1, 0.5, 0.1)
+
+priors_loss <-  tibble(expand.grid(tibble(prior_mean_alpha, 
+                                     prior_sd_alpha, 
+                                     prior_mean_beta_loss,
+                                     prior_sd_beta_loss
+                                     )))
+
+priors_win <-  tibble(expand.grid(tibble(prior_mean_alpha, 
+                                     prior_sd_alpha, 
+                                     prior_mean_beta_win, 
+                                     prior_sd_beta_win
+                                     )))
+```
+
+
+```{r}
+sim_d_and_fit_loss <- function(prior_mean_alpha, 
+                                     prior_sd_alpha, 
+                                     prior_mean_beta_loss,
+                                     prior_sd_beta_loss) {
+  
+    data <- list(
+        N = nrow(payoff_df_list2),
+        give_choices = payoff_df_list2$agent_give_choices,
+        take_choices = payoff_df_list2$agent_take_choices,
+        power = 1,
+        
+        prior_mean_alpha = prior_mean_alpha,
+        prior_sd_alpha = prior_sd_alpha,
+        
+        prior_mean_beta_loss = prior_mean_beta_loss,
+        prior_sd_beta_loss = prior_sd_beta_loss
+        
+      )
+    
+    samples <- mod_sensitivity_loss$sample(
+      data = data,
+      seed = 1000,
+      chains = 1,
+      parallel_chains = 1,
+      threads_per_chain = 1,
+      iter_warmup = 1000,
+      iter_sampling = 2000,
+      refresh = 0,
+      max_treedepth = 20,
+      adapt_delta = 0.99,
+    )
+    
+    draws_df <- as_draws_df(samples$draws()) 
+      temp <- tibble(alpha_prior = draws_df$alpha_prior, 
+                     beta_loss_prior = draws_df$beta_loss_prior, 
+                     beta_win_prior = draws_df$beta_win_prior, 
+                     
+                     alpha_posterior = draws_df$alpha, 
+                     beta_win_posterior = draws_df$beta_win, 
+                     beta_loss_posterior = draws_df$beta_loss,
+                     
+                     prior_preds_loss1 = draws_df$prior_preds_loss1, 
+                     prior_preds_loss3 = draws_df$prior_preds_loss3, 
+                     prior_preds_loss5 = draws_df$prior_preds_loss5, 
+                     prior_preds_loss7 = draws_df$prior_preds_loss7, 
+                     prior_preds_loss9 = draws_df$prior_preds_loss9, 
+                     
+                     prior_preds_win1 = draws_df$prior_preds_win1, 
+                     prior_preds_win3 = draws_df$prior_preds_win3, 
+                     prior_preds_win5 = draws_df$prior_preds_win5, 
+                     prior_preds_win7 = draws_df$prior_preds_win7, 
+                     prior_preds_win9 = draws_df$prior_preds_win9, 
+                     
+                     post_preds_loss1 = draws_df$post_preds_loss1, 
+                     post_preds_loss3 = draws_df$post_preds_loss3, 
+                     post_preds_loss5 = draws_df$post_preds_loss5, 
+                     post_preds_loss7 = draws_df$post_preds_loss7, 
+                     post_preds_loss9 = draws_df$post_preds_loss9, 
+                     
+                     post_preds_win1 = draws_df$post_preds_win1, 
+                     post_preds_win3 = draws_df$post_preds_win3, 
+                     post_preds_win5 = draws_df$post_preds_win5, 
+                     post_preds_win7 = draws_df$post_preds_win7, 
+                     post_preds_win9 = draws_df$post_preds_win9, 
+                     
+                     prior_mean_alpha = prior_mean_alpha,
+                     prior_sd_alpha = prior_sd_alpha, 
+                     
+                     prior_mean_beta_loss = prior_mean_beta_loss,
+                     prior_sd_beta_loss = prior_sd_beta_loss
+                     
+                     )
+    
+    return(temp)
+  
+}
+```
+
+```{r}
+sim_d_and_fit_win <- function(prior_mean_alpha, 
+                                     prior_sd_alpha, 
+                                     prior_mean_beta_win,
+                                     prior_sd_beta_win) {
+  
+    data <- list(
+        N = nrow(payoff_df_list2),
+        give_choices = payoff_df_list2$agent_give_choices,
+        take_choices = payoff_df_list2$agent_take_choices,
+        power = 1,
+        
+        prior_mean_alpha = prior_mean_alpha,
+        prior_sd_alpha = prior_sd_alpha,
+        
+        prior_mean_beta_win = prior_mean_beta_win,
+        prior_sd_beta_win = prior_sd_beta_win
+        
+      )
+    
+    samples <- mod_sensitivity_win$sample(
+      data = data,
+      seed = 1000,
+      chains = 1,
+      parallel_chains = 1,
+      threads_per_chain = 1,
+      iter_warmup = 1000,
+      iter_sampling = 2000,
+      refresh = 0,
+      max_treedepth = 20,
+      adapt_delta = 0.99,
+    )
+    
+    draws_df <- as_draws_df(samples$draws()) 
+      temp <- tibble(alpha_prior = draws_df$alpha_prior, 
+                     beta_loss_prior = draws_df$beta_loss_prior, 
+                     beta_win_prior = draws_df$beta_win_prior, 
+                     
+                     alpha_posterior = draws_df$alpha, 
+                     beta_win_posterior = draws_df$beta_win, 
+                     beta_loss_posterior = draws_df$beta_loss,
+                     
+                     prior_preds_loss1 = draws_df$prior_preds_loss1, 
+                     prior_preds_loss3 = draws_df$prior_preds_loss3, 
+                     prior_preds_loss5 = draws_df$prior_preds_loss5, 
+                     prior_preds_loss7 = draws_df$prior_preds_loss7, 
+                     prior_preds_loss9 = draws_df$prior_preds_loss9, 
+                     
+                     prior_preds_win1 = draws_df$prior_preds_win1, 
+                     prior_preds_win3 = draws_df$prior_preds_win3, 
+                     prior_preds_win5 = draws_df$prior_preds_win5, 
+                     prior_preds_win7 = draws_df$prior_preds_win7, 
+                     prior_preds_win9 = draws_df$prior_preds_win9, 
+                     
+                     post_preds_loss1 = draws_df$post_preds_loss1, 
+                     post_preds_loss3 = draws_df$post_preds_loss3, 
+                     post_preds_loss5 = draws_df$post_preds_loss5, 
+                     post_preds_loss7 = draws_df$post_preds_loss7, 
+                     post_preds_loss9 = draws_df$post_preds_loss9, 
+                     
+                     post_preds_win1 = draws_df$post_preds_win1, 
+                     post_preds_win3 = draws_df$post_preds_win3, 
+                     post_preds_win5 = draws_df$post_preds_win5, 
+                     post_preds_win7 = draws_df$post_preds_win7, 
+                     post_preds_win9 = draws_df$post_preds_win9, 
+                     
+                     
+                     prior_mean_alpha = prior_mean_alpha,
+                     prior_sd_alpha = prior_sd_alpha, 
+                     
+                     prior_mean_beta_win = prior_mean_beta_win,
+                     prior_sd_beta_win = prior_sd_beta_win
+                     
+                     )
+    
+    return(temp)
+  
+}
+```
+
+```{r}
+pacman::p_load(future, purrr, furrr)
+plan(multisession, workers = 4)
+
+recovery_df_loss <- future_pmap_dfr(priors_loss, sim_d_and_fit_loss, .options = furrr_options(seed = TRUE))
+write_csv(recovery_df_loss, "../Data/MemoryPriorSensitivity_loss.csv")
+
+recovery_df_win <- future_pmap_dfr(priors_win, sim_d_and_fit_win, .options = furrr_options(seed = TRUE))
+write_csv(recovery_df_win, "../Data/MemoryPriorSensitivity_win.csv")
+```
+
+
+```{r}
+
+recovery_df_win <- read_csv("../Data/MemoryPriorSensitivity_win.csv")
+recovery_df_loss <- read_csv("../Data/MemoryPriorSensitivity_loss.csv")
+```
+
+
+### Prior sensitivity plot alpha 
+
+```{r}
+ggplot(recovery_df_loss, aes(prior_sd_alpha, alpha_posterior)) +
+  geom_point(alpha = 0.1) +
+  geom_hline(yintercept = 0.3, color = "red") +
+  geom_smooth(method = lm) +
+  facet_wrap(.~prior_mean_alpha) +
+  ggtitle("Alpha - W/L Mem Agent vs WSLS") +
+  theme_classic()
+
+recovery_df_loss$prior
+```
+
+```{r}
+ggplot(recovery_df_win, aes(prior_sd_alpha, alpha_posterior)) +
+  geom_point(alpha = 0.1) +
+  geom_hline(yintercept = 0.3, color = "red") +
+  geom_smooth(method = lm) +
+  facet_wrap(.~prior_mean_alpha) +
+  ggtitle("Beta Win - W/L Mem Agent vs WSLS") +
+  theme_classic()
+```
+
+```{r}
+ggplot(recovery_df_win, aes(prior_sd_beta_win, beta_win_posterior)) +
+  geom_point(alpha = 0.1) +
+  geom_hline(yintercept = 0.3, color = "red") +
+  geom_smooth(method = lm) +
+  facet_wrap(.~prior_mean_beta_win) +
+  ggtitle("Beta Win - W/L Mem Agent vs WSLS") +
+  theme_classic()
+```
+
+```{r}
+ggplot(recovery_df_loss, aes(prior_sd_beta_loss, beta_loss_posterior)) +
+  geom_point(alpha = 0.1) +
+  geom_hline(yintercept = 0.6, color = "red") +
+  geom_smooth(method = lm) +
+  facet_wrap(.~prior_sd_beta_loss) +
+  ggtitle("Beta - Loss W/L Mem Agent vs WSLS") +
+  theme_classic()
+```
+
