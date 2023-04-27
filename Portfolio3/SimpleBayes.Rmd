@@ -1,0 +1,228 @@
+---
+title: "Portfolio 3 - Simple Bayes"
+author: "Lasse Hyldig Hansen"
+date: "2023-04-18"
+output: html_document
+---
+
+### Loading packages
+
+```{r}
+pacman::p_load(
+  tidyverse,
+  brms,
+  cmdstanr,
+  patchwork
+)
+```
+
+### Designing the model
+
+
+```{r}
+SimpleBayes_f <- function(bias, Source1, Source2){
+  
+  outcome <- inv_logit_scaled(bias + logit_scaled(Source1) + logit_scaled(Source2))
+  
+  return(outcome)
+  
+}
+```
+
+### Creating data
+
+```{r}
+bias <- 0
+trials <- 1000
+feedback = c(-3, -2, 0, 2, 3)
+
+Source_df <- data.frame()
+
+for (i in 1:max(trials)){
+  
+  Source1 = sample(1:8, 1, replace = T)
+  
+  Source2 = Source1 + sample(feedback, 1)
+  
+  Bias = 0
+  
+  while (!(Source2 %in% c(1:8))) {
+        Source2 = Source1 + sample(feedback, 1)
+      }
+  
+  Source_Vector = c(Source1, Source2, Bias)
+      
+  Source_df <- rbind(Source_df, Source_Vector)
+  colnames(Source_df) <- c("Source1", "Source2", "bias")
+  
+}
+
+for (n in seq(nrow(Source_df))) {
+  
+  Source_df$belief[n] <- SimpleBayes_f(Source_df$bias[n], Source_df$Source1[n]/9, Source_df$Source2[n]/9)
+  Source_df$discrete[n] <- round(Source_df$belief[n]*9,0)
+  Source_df$discrete[n] <- ifelse(Source_df$discrete[n] == 9, 8,
+                           ifelse(Source_df$discrete[n] == 0, 1, Source_df$discrete[n]))
+  
+}
+```
+
+### Visualize simulated data 
+
+```{r}
+ggplot(Source_df, aes(belief)) +
+  geom_histogram(bins = 10, alpha = 0.3, color = "black") +
+  theme_bw()
+```
+
+
+```{r}
+ggplot(Source_df, aes(Source1, belief, color = Source2, group = Source2)) +
+  geom_smooth(se = F) +
+  theme_bw()
+```
+
+```{r}
+ggplot(Source_df, aes(discrete)) +
+  geom_histogram(bins = 10, alpha = 0.3, color = "black") +
+  theme_bw()
+```
+
+### Data for Stan
+
+```{r}
+data_simpleBayes <- list(
+  N = nrow(Source_df),
+  y = Source_df$discrete/9,
+  Source1 = Source_df$Source1/9,
+  Source2 = Source_df$Source2/9
+)
+
+```
+
+
+### Creating stan model
+
+```{r}
+stan_simpleBayes_model <- "
+data {
+  int<lower=0> N;
+  array[N] real<lower=0, upper = 1> y;
+  array[N] real<lower=0, upper = 1> Source1;
+  array[N] real<lower=0, upper = 1> Source2;
+}
+
+transformed data{
+  array[N] real l_Source1;
+  array[N] real l_Source2;
+  array[N] real l_Discrete_Belief;
+  l_Discrete_Belief = logit(y);
+  l_Source1 = logit(Source1);
+  l_Source2 = logit(Source2);
+  
+}
+
+parameters {
+  real bias;
+  real<lower = 0.0001> sd;
+}
+
+model {
+  target +=  normal_lpdf(bias | 0, 0.5);
+  target +=  lognormal_lpdf(sd | 0, 0.5);
+  target +=  normal_lpdf(to_vector(l_Discrete_Belief) | bias + to_vector(l_Source1) + to_vector(l_Source2), sd);
+}
+
+generated quantities{
+  real bias_prior;
+  real sd_prior;
+
+  array[N] real log_lik;
+  
+  bias_prior = normal_rng(0, 0.5);
+  sd_prior = lognormal_rng(0, 0.5);
+  
+  for (n in 1:N){  
+    log_lik[n] = normal_lpdf(l_Discrete_Belief[n] | bias + l_Source1[n] +  l_Source2[n], sd);
+  }
+  
+}
+
+"
+
+write_stan_file(
+  stan_simpleBayes_model,
+  dir = "stan/",
+  basename = "W9_SimpleBayes.stan"
+  )
+```
+
+## Loading model
+
+```{r}
+file <- file.path("stan/W9_SimpleBayes.stan")
+mod_simpleBayes <- cmdstan_model(file, cpp_options = list(stan_threads = TRUE),
+                     stanc_options = list("O1"))
+```
+
+### Fitting model
+
+```{r}
+samples_simple <- mod_simpleBayes$sample(
+  data = data_simpleBayes,
+  #fixed_param = TRUE,
+  seed = 123,
+  chains = 2,
+  parallel_chains = 2,
+  threads_per_chain = 2,
+  iter_warmup = 1500,
+  iter_sampling = 3000,
+  refresh = 500
+)
+```
+
+### Basic model evaluation
+
+```{r}
+samples_simple$cmdstan_diagnose()
+```
+
+## Model Summary
+
+```{r}
+samples_simple$summary()
+```
+
+## Loo
+
+```{r}
+samples_simple$loo()
+```
+
+## Trace plot
+
+```{r}
+draws_df <- as_draws_df(samples_simple$draws())
+
+ggplot(draws_df, aes(.iteration, bias, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+```
+### Prior posterior plots
+
+```{r}
+ggplot(draws_df) +
+  geom_density(aes(sd), alpha = 0.6, fill = "lightblue") +
+  geom_density(aes(sd_prior), alpha = 0.6, fill = "pink") +
+  theme_bw()
+```
+
+
+```{r}
+ggplot(draws_df) +
+  geom_density(aes(bias), alpha = 0.6, fill = "lightblue") +
+  geom_density(aes(bias_prior), alpha = 0.6, fill = "pink") +
+  geom_vline(xintercept = Source_df$bias[1]) +
+  theme_bw()
+```
+
