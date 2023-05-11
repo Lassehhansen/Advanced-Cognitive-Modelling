@@ -1,0 +1,205 @@
+---
+title: "Experimental Data Fit"
+author: "Lasse Hyldig Hansen"
+date: "2023-05-01"
+output: html_document
+---
+
+### Loading packages
+
+```{r}
+library(tidyverse)
+library(furrr)
+library(cmdstanr)
+library(ggpubr)
+library(furrr)
+library(rBeta2009)
+```
+
+## Loading data, cleaning it, and choosing a subset
+
+```{r}
+library(readr)
+library(tidyverse)
+AlienDat = read_csv("AlienData.txt")
+
+AlienDat = AlienDat %>% filter(session == 1)
+
+AlienDat = AlienDat %>% filter(subject == 1)
+
+vec_1 = AlienDat$stimulus[1] %>% str_replace_all(".jpg", "")%>% str_replace_all("pt", "") %>% str_split("") %>% unlist() 
+
+cleaned_stim_data = as.data.frame(t(as.matrix(data.frame(vec_1))))
+
+
+for (i in 2:length(AlienDat$stimulus)){
+  string_vector = AlienDat$stimulus[i] %>% 
+                    str_replace_all(".jpg", "") %>% 
+                    str_replace_all("pt", "") %>%  
+                    str_split("") %>% 
+                    unlist()
+  temp = as.data.frame(t(as.matrix(data.frame(string_vector))))
+  cleaned_stim_data = rbind(cleaned_stim_data, temp)
+}
+```
+
+### Getting the features in columns
+
+```{r}
+AlienDat$f1 = cleaned_stim_data$V1
+AlienDat$f2 = cleaned_stim_data$V2
+AlienDat$f3 = cleaned_stim_data$V3
+AlienDat$f4 = cleaned_stim_data$V4
+AlienDat$f5 = cleaned_stim_data$V5
+
+
+AlienDat$f1 = as.numeric(AlienDat$f1)
+AlienDat$f2 = as.numeric(AlienDat$f2)
+AlienDat$f3 = as.numeric(AlienDat$f3)
+AlienDat$f4 = as.numeric(AlienDat$f4)
+AlienDat$f5 = as.numeric(AlienDat$f5)
+
+AlienDat$category = ifelse(AlienDat$category %% 2 == 0, 1, 0)
+AlienDat$response = ifelse(AlienDat$response %% 2 == 0, 1, 0)
+AlienDat$correct = ifelse(AlienDat$category == AlienDat$response, 1, 0)
+
+```
+
+### loading stan model from folder 
+
+```{r}
+library(cmdstanr)
+file <- file.path("stan/W10_GCM.stan")
+mod_GCM <- cmdstan_model(file, cpp_options = list(stan_threads = TRUE),
+                     stanc_options = list("O1"))
+```
+
+
+```{r}
+gcm_data <- list(
+  ntrials = nrow(AlienDat),
+  nfeatures = 5,
+  cat_one = AlienDat$category,
+  y = AlienDat$response,
+  obs = as.matrix(AlienDat[, c("f1", "f2", "f3", "f4", "f5")]),
+  b = 0.5,
+  w_prior_values = c(1, 1, 1, 1, 1),
+  c_prior_values = c(0, 1)
+)
+
+samples_gcm <- mod_GCM$sample(
+  data = gcm_data,
+  seed = 123,
+  chains = 2,
+  parallel_chains = 2,
+  threads_per_chain = 3,
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  refresh = 500
+)
+
+```
+
+## Getting model diagnostics
+
+```{r}
+samples_gcm$cmdstan_diagnose()
+```
+
+## Model summary
+
+```{r}
+samples_gcm$summary()
+```
+
+## Trace plots
+
+```{r}
+library(posterior)
+draws_df <- as_draws_df(samples_gcm$draws())
+
+ggplot(draws_df, aes(.iteration, c, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+```
+
+```{r}
+ggplot(draws_df, aes(.iteration, logit_c, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+```
+
+```{r}
+w1_p = ggplot(draws_df, aes(.iteration, `w[1]`, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+
+w2_p = ggplot(draws_df, aes(.iteration, `w[2]`, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+
+w3_p = ggplot(draws_df, aes(.iteration, `w[3]`, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+w4_p = ggplot(draws_df, aes(.iteration, `w[4]`, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+
+w5_p = ggplot(draws_df, aes(.iteration, `w[5]`, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+
+weight_plot = ggarrange(w1_p, w2_p, w3_p, w4_p, w5_p,
+                        labels = c("A", "B", "C", "D", "E"))
+
+```
+
+
+### Prior / Posterior predictive plots
+
+```{r}
+ggplot(draws_df) +
+  geom_histogram(aes(logit_c), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(logit_c_prior), alpha = 0.6, fill = "pink") +
+  theme_bw()
+```
+
+
+```{r}
+ggplot(draws_df) +
+  geom_histogram(aes(c), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(c_prior), alpha = 0.6, fill = "pink") +
+  theme_bw()
+```
+
+```{r}
+w1_plot = ggplot(draws_df) +
+  geom_histogram(aes(`w[1]`), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(`w_prior[1]`), alpha = 0.6, fill = "pink") +
+  theme_bw()
+
+w2_plot = ggplot(draws_df) +
+  geom_histogram(aes(`w[2]`), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(`w_prior[2]`), alpha = 0.6, fill = "pink") +
+  theme_bw()
+
+w3_plot = ggplot(draws_df) +
+  geom_histogram(aes(`w[3]`), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(`w_prior[3]`), alpha = 0.6, fill = "pink") +
+  theme_bw()
+
+w4_plot = ggplot(draws_df) +
+  geom_histogram(aes(`w[4]`), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(`w_prior[4]`), alpha = 0.6, fill = "pink") +
+  theme_bw()
+
+w5_plot = ggplot(draws_df) +
+  geom_histogram(aes(`w[5]`), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(`w_prior[5]`), alpha = 0.6, fill = "pink") +
+  theme_bw()
+
+weight_plot_pp = ggarrange(w1_plot, w2_plot, w3_plot, w4_plot, w5_plot,
+                        labels = c("A", "B", "C", "D", "E"))
+```
+
+

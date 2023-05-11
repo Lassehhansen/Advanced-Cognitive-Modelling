@@ -1,0 +1,529 @@
+---
+title: "Simulating_data"
+author: "Lasse Hyldig Hansen"
+date: "2023-05-01"
+output: html_document
+---
+
+
+### Loading packages
+
+```{r}
+library(tidyverse)
+library(furrr)
+library(cmdstanr)
+library(rBeta2009)
+library(ggpubr)
+```
+
+## Generating data setup 
+
+```{r}
+sim_dat <- data.frame(stimuli = 1:32,
+                 f1 = sample(c(0,1), 32, replace = TRUE),
+                 f2 = sample(c(0,1), 32, replace = TRUE),
+                 f3 = sample(c(0,1), 32, replace = TRUE),
+                 f4 = sample(c(0,1), 32, replace = TRUE),
+                 f5 = sample(c(0,1), 32, replace = TRUE))
+```
+
+### Doing it for each session in a random order
+
+```{r}
+sim_dat1 <- sim_dat[sample(nrow(sim_dat)),]
+sim_dat2 <- sim_dat[sample(nrow(sim_dat)),]
+sim_dat3 <- sim_dat[sample(nrow(sim_dat)),]
+
+sim_dat <- rbind(sim_dat1, sim_dat2, sim_dat3)
+```
+
+### Categorizing outcome 
+
+```{r}
+sim_dat = sim_dat %>% 
+          mutate(danger = ifelse(f1 == 1 & f2 == 1, 1, 0),
+                 nutrition = ifelse(f4 == 1, 1, 0))
+
+```
+## Generating the sequence of stimuli in the full experiment
+
+```{r}
+library(readr)
+AlienDat = read_csv("AlienData.txt")
+```
+
+## Calculating Distance, Similarity, and visualizing what they are doing
+
+```{r}
+# Distance 
+distance <- function(vect1, vect2, w) {
+  return(sum(w * abs(vect1 - vect2)))
+}
+
+# Similarity
+similarity <- function(distance, c) {
+  return(exp(-c * distance))
+}
+
+# Let's assess similarity
+dd <- tibble(
+  expand_grid(
+    distance = c(0,.1,.2, .3,.4,.5,1,1.5,2,3,4,5,6), 
+    c = c(0.1, 0.2, 0.5, 0.7, 1, 1.5, 2, 3, 4, 5, 6))) %>% 
+  mutate(
+    similarity = similarity(distance, c)
+  )
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+dd %>% mutate(c = factor(c)) %>%
+  ggplot() +
+  geom_line(aes(distance, similarity, group = c, color = c)) + 
+  theme_pubr() +
+  scale_color_hue(l=50, c=50)
+```
+## generative categorization model
+
+```{r}
+### generative model ###
+gcm <- function(w, c, obs, cat_one, quiet = TRUE) {
+  # create an empty list to save probability of saying "1" for each trial
+  r <- c()
+  
+  ntrials <- nrow(obs)
+  
+  for (i in 1:ntrials) {
+    # If quiet is FALSE, print every ten trials
+    if (!quiet && i %% 10 == 0) {
+      print(paste("i =", i))
+    }
+    # if this is the first trial, or there any category with no exemplars seen yet, set the choice to random
+    if (i == 1 || sum(cat_one[1:(i - 1)]) == 0 || sum(cat_one[1:(i - 1)]) == (i - 1)) {
+      r <- c(r, .5)
+    } else {
+      similarities <- c()
+      # for each previously seen stimulus assess distance and similarity
+      for (e in 1:(i - 1)) {
+        sim <- similarity(distance(obs[i, ], obs[e, ], w), c)
+        similarities <- c(similarities, sim)
+      }
+      # Calculate prob of saying "1" by dividing similarity to 1 by the sum of similarity to 1 and to 2
+      numerator <- 0.5 * sum(similarities[cat_one[1:(i - 1)] == 1])
+      denominator <- 0.5 * sum(similarities[cat_one[1:(i - 1)] == 1]) + 0.5 * sum(similarities[cat_one[1:(i - 1)] == 0])
+      r <- c(r, numerator / denominator)
+    }
+  }
+
+  return(rbinom(ntrials, 1, r))
+}
+```
+
+## Generate data 
+
+```{r}
+# function for simulation responses
+simulate_responses <- function(agent, w, c) {
+    
+    observations <- sim_dat %>%
+        select(c("f1", "f2", "f3", "f4", "f5"))
+    
+    category <- sim_dat$nutrition
+    
+    if (w == "equal") {
+        weight <- rep(1 / 5, 5)
+    } else if (w == "skewed1") {
+        weight <- c(0.5, 0.2, 0.2, 0.1, 0)
+    } else if (w == "skewed2") {
+        weight <- c(0, 0, 0, 1, 0)
+    }
+
+    # simulate responses
+    responses <- gcm(
+        weight,
+        c,
+        observations,
+        category
+    )
+    
+    tmp_simulated_responses <- sim_dat %>%
+        mutate(
+            trial = seq(nrow(sim_dat)),
+            sim_response = responses,
+            correct = ifelse(category == sim_response, 1, 0),
+            performance = cumsum(correct) / seq_along(correct),
+            c = c,
+            w = w,
+            agent = agent
+        )
+
+    return(tmp_simulated_responses)
+}
+
+
+
+# simulate responses
+plan(multisession, workers = availableCores())
+
+param_df <- dplyr::tibble(
+    expand_grid(
+        agent = 1,
+        c = seq(.1, 2, 0.2),
+        w = c("equal", "skewed1", "skewed2")
+    )
+)
+
+simulated_responses <- future_pmap_dfr(param_df,
+    simulate_responses,
+    .options = furrr_options(seed = TRUE)
+)
+```
+
+```{r}
+p3 <- simulated_responses %>%
+  mutate(w = as.factor(w)) %>%
+  ggplot(aes(trial, performance, group = w, color = w)) +
+  geom_smooth() +
+  theme_pubr() +
+  facet_wrap(c ~ .)
+
+p4 <- simulated_responses %>%
+  mutate(c = as.factor(c)) %>%
+  ggplot(aes(trial, performance, group = c, color = c)) +
+  geom_smooth() +
+  theme_pubr() +
+  facet_wrap(w ~ .)
+
+p3
+```
+
+```{r}
+p4
+```
+
+
+### Making a stan model and saving it in a folder called stan
+
+```{r}
+gcm_model <- "
+// Generalized Context Model (GCM)
+
+data {
+    int<lower=1> ntrials;  // number of trials
+    int<lower=1> nfeatures;  // number of predefined relevant features
+    array[ntrials] int<lower=0, upper=1> cat_one; // true responses on a trial by trial basis
+    array[ntrials] int<lower=0, upper=1> y;  // decisions on a trial by trial basis
+    array[ntrials, nfeatures] real obs; // stimuli as vectors of features
+    real<lower=0, upper=1> b;  // initial bias for category one over two
+
+    // priors
+    vector[nfeatures] w_prior_values;  // concentration parameters for dirichlet distribution <lower=1>
+    array[2] real c_prior_values;  // mean and variance for logit-normal distribution
+}
+
+transformed data {
+    array[ntrials] int<lower=0, upper=1> cat_two; // dummy variable for category two over cat 1
+    array[sum(cat_one)] int<lower=1, upper=ntrials> cat_one_idx; // array of which stimuli are cat 1
+    array[ntrials-sum(cat_one)] int<lower=1, upper=ntrials> cat_two_idx; //  array of which stimuli are cat 2
+    int idx_one = 1; // Initializing 
+    int idx_two = 1;
+    for (i in 1:ntrials){
+        cat_two[i] = abs(cat_one[i]-1);
+
+        if (cat_one[i]==1){
+            cat_one_idx[idx_one] = i;
+            idx_one +=1;
+        } else {
+            cat_two_idx[idx_two] = i;
+            idx_two += 1;
+        }
+    }
+}
+
+parameters {
+    simplex[nfeatures] w;  // simplex means sum(w)=1
+    real logit_c;
+}
+
+transformed parameters {
+    // parameter c 
+    real<lower=0, upper=2> c = inv_logit(logit_c)*2;  // times 2 as c is bounded between 0 and 2
+
+    // parameter r (probability of response = category 1)
+    array[ntrials] real<lower=0.0001, upper=0.9999> r;
+    array[ntrials] real rr;
+
+    for (i in 1:ntrials) {
+
+        // calculate distance from obs to all exemplars
+        array[(i-1)] real exemplar_sim;
+        for (e in 1:(i-1)){
+            array[nfeatures] real tmp_dist;
+            for (j in 1:nfeatures) {
+                tmp_dist[j] = w[j]*abs(obs[e,j] - obs[i,j]);
+            }
+            exemplar_sim[e] = exp(-c * sum(tmp_dist));
+        }
+
+        if (sum(cat_one[:(i-1)])==0 || sum(cat_two[:(i-1)])==0){  // if there are no examplars in one of the categories
+            r[i] = 0.5;
+
+        } else {
+            // calculate similarity
+            array[2] real similarities;
+            
+            array[sum(cat_one[:(i-1)])] int tmp_idx_one = cat_one_idx[:sum(cat_one[:(i-1)])];
+            array[sum(cat_two[:(i-1)])] int tmp_idx_two = cat_two_idx[:sum(cat_two[:(i-1)])];
+            similarities[1] = sum(exemplar_sim[tmp_idx_one]);
+            similarities[2] = sum(exemplar_sim[tmp_idx_two]);
+
+            // calculate r[i]
+            rr[i] = (b*similarities[1]) / (b*similarities[1] + (1-b)*similarities[2]);
+
+            // to make the sampling work
+            if (rr[i] > 0.9999){
+                r[i] = 0.9999;
+            } else if (rr[i] < 0.0001) {
+                r[i] = 0.0001;
+            } else if (rr[i] > 0.0001 && rr[i] < 0.9999) {
+                r[i] = rr[i];
+            } else {
+                r[i] = 0.5;
+            }
+        }
+    }
+}
+
+model {
+    // Priors
+    target += dirichlet_lpdf(w | w_prior_values);
+    target += normal_lpdf(logit_c | c_prior_values[1], c_prior_values[2]);
+    
+    
+    // Decision Data
+    target += bernoulli_lpmf(y | r);
+}
+
+generated quantities {
+    // priors
+    simplex[nfeatures] w_prior = dirichlet_rng(w_prior_values);
+    real logit_c_prior = normal_rng(c_prior_values[1], c_prior_values[2]);
+    real<lower=0, upper=2> c_prior = inv_logit(logit_c_prior)*2;
+
+    // prior pred
+    array[ntrials] real<lower=0, upper=1> r_prior;
+    array[ntrials] real rr_prior;
+    for (i in 1:ntrials) {
+
+        // calculate distance from obs to all exemplars
+        array[(i-1)] real exemplar_dist;
+        for (e in 1:(i-1)){
+            array[nfeatures] real tmp_dist;
+            for (j in 1:nfeatures) {
+                tmp_dist[j] = w_prior[j]*abs(obs[e,j] - obs[i,j]);
+            }
+            exemplar_dist[e] = sum(tmp_dist);
+        }
+
+        if (sum(cat_one[:(i-1)])==0 || sum(cat_two[:(i-1)])==0){  // if there are no examplars in one of the categories
+            r_prior[i] = 0.5;
+
+        } else {
+            // calculate similarity
+            array[2] real similarities;
+            
+            array[sum(cat_one[:(i-1)])] int tmp_idx_one = cat_one_idx[:sum(cat_one[:(i-1)])];
+            array[sum(cat_two[:(i-1)])] int tmp_idx_two = cat_two_idx[:sum(cat_two[:(i-1)])];
+            similarities[1] = exp(-c_prior * sum(exemplar_dist[tmp_idx_one]));
+            similarities[2] = exp(-c_prior * sum(exemplar_dist[tmp_idx_two]));
+
+            // calculate r[i]
+            rr_prior[i] = (b*similarities[1]) / (b*similarities[1] + (1-b)*similarities[2]);
+
+            // to make the sampling work
+            if (rr_prior[i] == 1){
+                r_prior[i] = 0.9999;
+            } else if (rr_prior[i] == 0) {
+                r_prior[i] = 0.0001;
+            } else if (rr_prior[i] > 0 && rr_prior[i] < 1) {
+                r_prior[i] = rr_prior[i];
+            } else {
+                r_prior[i] = 0.5;
+            }
+        }
+    }
+
+    array[ntrials] int<lower=0, upper=1> priorpred = bernoulli_rng(r_prior);
+
+    // posterior pred
+    array[ntrials] int<lower=0, upper=1> posteriorpred = bernoulli_rng(r);
+    array[ntrials] int<lower=0, upper=1> posteriorcorrect;
+    for (i in 1:ntrials) {
+        if (posteriorpred[i] == cat_one[i]) {
+            posteriorcorrect[i] = 1;
+        } else {
+            posteriorcorrect[i] = 0;
+        }
+    }
+    
+    
+    // log likelihood
+   array[ntrials] real log_lik;
+
+   for (i in 1:ntrials) {
+        log_lik[i] = bernoulli_lpmf(y[i] | r[i]);
+   }
+
+}"
+
+write_stan_file(
+  gcm_model,
+  dir = "stan/",
+  basename = "W10_GCM.stan")
+```
+
+### loading stan model
+
+```{r}
+file <- file.path("stan/W10_GCM.stan")
+mod_GCM <- cmdstan_model(file, cpp_options = list(stan_threads = TRUE),
+                     stanc_options = list("O1"))
+```
+
+```{r}
+d <- simulated_responses %>% subset(
+  c == "1.1" & w == "equal"
+)
+
+gcm_data <- list(
+  ntrials = nrow(d),
+  nfeatures = 5,
+  cat_one = d$nutrition,
+  y = d$sim_response,
+  obs = as.matrix(d[, c("f1", "f2", "f3", "f4", "f5")]),
+  b = 0.5,
+  w_prior_values = c(1, 1, 1, 1, 1),
+  c_prior_values = c(0, 1)
+)
+
+samples_gcm <- mod_GCM$sample(
+  data = gcm_data,
+  seed = 123,
+  chains = 2,
+  parallel_chains = 2,
+  threads_per_chain = 3,
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  refresh = 500
+)
+```
+
+## Getting model diagnostics
+
+```{r}
+samples_gcm$cmdstan_diagnose()
+```
+
+## Model summary
+
+```{r}
+samples_gcm$summary()
+```
+
+## Trace plots
+
+```{r}
+library(posterior)
+draws_df <- as_draws_df(samples_gcm$draws())
+
+
+ggplot(draws_df, aes(.iteration, c, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+```
+
+```{r}
+ggplot(draws_df, aes(.iteration, logit_c, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+```
+
+```{r}
+w1_p = ggplot(draws_df, aes(.iteration, `w[1]`, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+
+w2_p = ggplot(draws_df, aes(.iteration, `w[2]`, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+
+w3_p = ggplot(draws_df, aes(.iteration, `w[3]`, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+w4_p = ggplot(draws_df, aes(.iteration, `w[4]`, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+
+w5_p = ggplot(draws_df, aes(.iteration, `w[5]`, group = .chain, color = .chain)) +
+  geom_line(alpha = 0.5) +
+  theme_classic()
+
+weight_plot = ggarrange(w1_p, w2_p, w3_p, w4_p, w5_p,
+                        labels = c("A", "B", "C", "D", "E"))
+
+```
+
+
+### Prior / Posterior predictive plots
+
+```{r}
+ggplot(draws_df) +
+  geom_histogram(aes(logit_c), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(logit_c_prior), alpha = 0.6, fill = "pink") +
+  theme_bw()
+```
+
+
+```{r}
+ggplot(draws_df) +
+  geom_histogram(aes(c), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(c_prior), alpha = 0.6, fill = "pink") +
+  geom_vline(xintercept = d$c[1]) +
+  theme_bw()
+```
+
+```{r}
+w1_plot = ggplot(draws_df) +
+  geom_histogram(aes(`w[1]`), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(`w_prior[1]`), alpha = 0.6, fill = "pink") +
+  geom_vline(xintercept = 0.2) +
+  theme_bw()
+
+w2_plot = ggplot(draws_df) +
+  geom_histogram(aes(`w[2]`), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(`w_prior[2]`), alpha = 0.6, fill = "pink") +
+  geom_vline(xintercept = 0.2) +
+  theme_bw()
+
+w3_plot = ggplot(draws_df) +
+  geom_histogram(aes(`w[3]`), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(`w_prior[3]`), alpha = 0.6, fill = "pink") +
+  geom_vline(xintercept = 0.2) +
+  theme_bw()
+
+w4_plot = ggplot(draws_df) +
+  geom_histogram(aes(`w[4]`), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(`w_prior[4]`), alpha = 0.6, fill = "pink") +
+  geom_vline(xintercept = 0.2) +
+  theme_bw()
+
+w5_plot = ggplot(draws_df) +
+  geom_histogram(aes(`w[5]`), alpha = 0.6, fill = "lightblue") +
+  geom_histogram(aes(`w_prior[5]`), alpha = 0.6, fill = "pink") +
+  geom_vline(xintercept = 0.2) +
+  theme_bw()
+
+weight_plot_pp = ggarrange(w1_plot, w2_plot, w3_plot, w4_plot, w5_plot,
+                        labels = c("A", "B", "C", "D", "E"))
+```
+
+
+
